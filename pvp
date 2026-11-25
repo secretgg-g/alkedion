@@ -1,0 +1,1168 @@
+-- ============================================================
+-- MEMO HUB + SILENT ADONIS BYPASS (WORKING HITBOX V2)
+-- ============================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Camera = workspace.CurrentCamera
+
+local WHITE          = Color3.fromRGB(255, 255, 255)
+local BG_MAIN        = Color3.fromRGB(0, 0, 0)
+local BG_HEADER      = Color3.fromRGB(0, 0, 0)
+local BG_SIDEBAR     = Color3.fromRGB(0, 0, 0)
+local BG_ROW         = Color3.fromRGB(0, 0, 0)
+local BG_ROW_HOVER   = Color3.fromRGB(15, 15, 15)
+local BG_OFF         = Color3.fromRGB(25, 25, 25)
+local TEXT_MAIN      = Color3.fromRGB(255, 255, 255)
+local TEXT_DIM       = Color3.fromRGB(180, 180, 180)
+local STROKE_WHITE   = Color3.fromRGB(255, 255, 255)
+
+-- ================= STATE =================
+local AimEnabled = false
+local ESPEnabled = false
+local ESPNameEnabled = true
+local ESPDistEnabled = true
+local FOVCircleEnabled = false
+local HitboxEnabled = false
+local BigHeadEnabled = false
+local GodmodeEnabled = false
+local NoRecoilEnabled = false
+local RapidFireEnabled = false
+local DeviceSpoofEnabled = false
+local DeviceValue = "Computer"
+local AutoSnowEnabled = false
+local HitboxTransparency = 0.5
+local HitboxSize = 4
+local BigHeadMultiplier = 3
+local FOV = 120
+local TrackingStrength = 0.20
+local WallCheck = true
+local TeamCheck = true
+local ESPHighlights = {}
+local ESPTexts = {}
+local OriginalHitboxSizes = {}  -- For storing original HRP sizes
+local OriginalHeadSizes = {}
+local ConfigFileName = "MemoHubConfig.json"
+local SpawnLocations = {}
+local DeviceRemote = nil
+local GodmodeHB = nil
+local GodmodeStep = nil
+
+local GarapalSilentAimEnabled = false
+local GarapalRapidFireEnabled = false
+local GarapalNoRecoilEnabled = false
+local GarapalGodModeEnabled = false
+local GarapalFlyEnabled = false
+local GarapalNoclipEnabled = false
+
+local GarapalFOVRadius = 500
+local GarapalFIRE_RATE_INTERVAL = 0.01
+local GarapalRapidFireLoop = nil
+
+local ScreenGui, FOVCircle
+
+-- SAFE ADONIS BYPASS
+task.spawn(function()
+    pcall(function()
+        local Detected, Kill
+        if type(setthreadidentity) == "function" then pcall(setthreadidentity, 2) end
+        if type(getgc) ~= "function" or type(hookfunction) ~= "function" then return end
+        for _, v in pairs(getgc(true)) do
+            if typeof(v) == "table" then
+                local DetectFunc = rawget(v, "Detected")
+                local KillFunc = rawget(v, "Kill")
+                if typeof(DetectFunc) == "function" and not Detected then
+                    Detected = DetectFunc
+                    pcall(hookfunction, Detected, function() return true end)
+                end
+                if rawget(v, "Variables") and rawget(v, "Process") and typeof(KillFunc) == "function" and not Kill then
+                    Kill = KillFunc
+                    pcall(hookfunction, Kill, function() end)
+                end
+            end
+        end
+        if type(setthreadidentity) == "function" then pcall(setthreadidentity, 7) end
+    end)
+end)
+
+-- TEAM CHECK
+local TEAM_MARKERS = {"StageTeamSide", "Team", "TeamName", "TeamColor", "TeamId", "TeamID", "team"}
+local function readTeamMarker(instance)
+    if not instance then return nil end
+    for _, name in ipairs(TEAM_MARKERS) do
+        local attr = instance:GetAttribute(name)
+        if attr ~= nil then return name .. "=" .. tostring(attr) end
+        local child = instance:FindFirstChild(name)
+        if child and child:IsA("ValueBase") then return name .. "=" .. tostring(child.Value) end
+    end
+    return nil
+end
+local function getCustomTeamIdentity(targetPlayer)
+    if not targetPlayer then return nil end
+    local marker = readTeamMarker(targetPlayer) or readTeamMarker(targetPlayer.Character)
+    if marker then return marker end
+    local stats = targetPlayer:FindFirstChild("leaderstats")
+    marker = readTeamMarker(stats)
+    if marker then return marker end
+    if not targetPlayer.Neutral then return "TeamColor=" .. tostring(targetPlayer.TeamColor) end
+    return nil
+end
+local customTeamCache = { count = 0, at = 0 }
+local function getCustomTeamCount()
+    local now = os.clock()
+    if now - customTeamCache.at > 0.5 then
+        local seen, count = {}, 0
+        for _, p in ipairs(Players:GetPlayers()) do
+            local id = getCustomTeamIdentity(p)
+            if id and not seen[id] then seen[id] = true; count = count + 1 end
+        end
+        customTeamCache.count = count
+        customTeamCache.at = now
+    end
+    return customTeamCache.count
+end
+local function isTeammate(targetPlayer)
+    if not targetPlayer or targetPlayer == LocalPlayer then return false end
+    if LocalPlayer.Team and targetPlayer.Team then return LocalPlayer.Team == targetPlayer.Team end
+    local lTeam = getCustomTeamIdentity(LocalPlayer)
+    local tTeam = getCustomTeamIdentity(targetPlayer)
+    if not lTeam or not tTeam then return false end
+    return getCustomTeamCount() >= 2 and lTeam == tTeam
+end
+local function isEnemyPlayer(player)
+    if not TeamCheck then return true end
+    if player == LocalPlayer then return false end
+    return not isTeammate(player)
+end
+
+-- GARAPAL SILENT AIM & GC HOOKS
+local isShootingBlaster = false
+local function getClosestTargetInFOV()
+    local bestPart, bestDist = nil, math.huge
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and isEnemyPlayer(player) then
+            local head = player.Character:FindFirstChild("Head")
+            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+            if head and humanoid and humanoid.Health > 0 then
+                local screenPos, onScreen = Camera:WorldToScreenPoint(head.Position)
+                if onScreen then
+                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+                    if dist < GarapalFOVRadius and dist < bestDist then
+                        bestDist = dist
+                        bestPart = head
+                    end
+                end
+            end
+        end
+    end
+    return bestPart
+end
+
+local function isValidEnemyHit(hitInstance)
+    if not hitInstance then return false end
+    local model = hitInstance:FindFirstAncestorOfClass("Model")
+    if not model or model == LocalPlayer.Character then return false end
+    local hitPlayer = Players:GetPlayerFromCharacter(model)
+    if hitPlayer and not isEnemyPlayer(hitPlayer) then return false end
+    return model:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+if getrawmetatable and setreadonly then
+    local wsMeta = getrawmetatable(workspace)
+    if wsMeta then
+        local origNC = wsMeta.__namecall
+        setreadonly(wsMeta, false)
+        wsMeta.__namecall = function(self, ...)
+            local method = getnamecallmethod()
+            if isShootingBlaster and self == workspace and (method == "Spherecast" or method == "Raycast") then
+                local args = { ... }
+                local hitResult = origNC(self, table.unpack(args))
+                if hitResult and hitResult.Instance then
+                    if isValidEnemyHit(hitResult.Instance) then return hitResult end
+                    local ignored = { hitResult.Instance }
+                    if hitResult.Instance.Parent then table.insert(ignored, hitResult.Instance.Parent) end
+                    for _ = 1, 10 do
+                        local rp
+                        if args[3] and typeof(args[3]) == "RaycastParams" then rp = args[3]
+                        elseif args[4] and typeof(args[4]) == "RaycastParams" then rp = args[4] end
+                        if rp then
+                            local fl = rp.FilterDescendantsInstances or {}
+                            for _, i in ipairs(ignored) do table.insert(fl, i) end
+                            rp.FilterDescendantsInstances = fl
+                        end
+                        local retry = origNC(self, table.unpack(args))
+                        if not retry then break end
+                        if isValidEnemyHit(retry.Instance) then return retry end
+                        table.insert(ignored, retry.Instance)
+                        if retry.Instance.Parent then table.insert(ignored, retry.Instance.Parent) end
+                    end
+                    return nil
+                end
+                return hitResult
+            end
+            return origNC(self, ...)
+        end
+        setreadonly(wsMeta, true)
+    end
+end
+
+task.delay(3, function()
+    if not getgc then return end
+    pcall(function()
+        local scanned = 0
+        for _, obj in pairs(getgc(true)) do
+            if type(obj) == "table" and rawget(obj, "shoot") and rawget(obj, "reload") and rawget(obj, "recoil") and rawget(obj, "canShoot") and rawget(obj, "getShotOrigin") and rawget(obj, "isWallBlockingShot") and not rawget(obj, "__hooked") then
+                obj.__hooked = true
+                
+                local origRecoil = obj.recoil
+                obj.recoil = function(self, ...)
+                    if GarapalNoRecoilEnabled or NoRecoilEnabled then return end
+                    if origRecoil then return origRecoil(self, ...) end
+                end
+
+                local origWallCheck = obj.isWallBlockingShot
+                obj.isWallBlockingShot = function(self, ...)
+                    if GarapalNoRecoilEnabled or NoRecoilEnabled then return false end
+                    if origWallCheck then return origWallCheck(self, ...) end
+                    return false
+                end
+
+                local origGetSecondsPerShot = obj.getSecondsPerShot
+                obj.getSecondsPerShot = function(self, ...)
+                    if GarapalRapidFireEnabled or RapidFireEnabled then return GarapalFIRE_RATE_INTERVAL end
+                    if origGetSecondsPerShot then return origGetSecondsPerShot(self, ...) end
+                    return 0.1
+                end
+
+                local origStartShooting = obj.startShooting
+                obj.startShooting = function(self, ...)
+                    if GarapalRapidFireEnabled or RapidFireEnabled then
+                        if self:canShoot() and not self.shooting then
+                            if self.startAutoFireWhileHeld then
+                                self:startAutoFireWhileHeld(GarapalFIRE_RATE_INTERVAL)
+                            elseif origStartShooting then origStartShooting(self, ...) end
+                        end
+                        return
+                    end
+                    if origStartShooting then return origStartShooting(self, ...) end
+                end
+
+                local origGetShotOrigin = obj.getShotOrigin
+                obj.getShotOrigin = function(self, ...)
+                    local originCF, maxDist = origGetShotOrigin(self, ...)
+                    if GarapalSilentAimEnabled then
+                        local th = getClosestTargetInFOV()
+                        if th then
+                            local op = originCF.Position
+                            local tp = th.Position
+                            return CFrame.lookAt(op, tp), (tp - op).Magnitude + 10
+                        end
+                    end
+                    return originCF, maxDist
+                end
+
+                local origShoot = obj.shoot
+                obj.shoot = function(self, ...)
+                    if GarapalNoRecoilEnabled or NoRecoilEnabled then
+                        if self.blaster then pcall(function() self.blaster:SetAttribute("Spread", 0) end) end
+                    end
+                    isShootingBlaster = true
+                    origShoot(self, ...)
+                    isShootingBlaster = false
+                end
+            end
+            scanned = scanned + 1
+            if scanned % 300 == 0 then task.wait() end
+        end
+    end)
+end)
+
+-- DEVICE REMOTE
+task.spawn(function()
+    local ok, r = pcall(function() return ReplicatedStorage:WaitForChild("PVP_DeviceReport", 15) end)
+    if ok and r then
+        DeviceRemote = r
+        if DeviceSpoofEnabled then pcall(function() DeviceRemote:FireServer(DeviceValue) end) end
+    end
+end)
+local function PushDeviceSpoof()
+    if DeviceSpoofEnabled and DeviceRemote then
+        pcall(function() DeviceRemote:FireServer(DeviceValue) end)
+    end
+end
+
+-- GODMODE
+local isGodModeActive = false
+local godModeConnection = nil
+local currentRootPart = nil
+
+local function stopGodmode()
+    if godModeConnection then godModeConnection:Disconnect(); godModeConnection = nil end
+end
+
+local function startGodmode(char)
+    stopGodmode()
+    local rootPart = char:WaitForChild("HumanoidRootPart", 5)
+    if not rootPart then return end
+    currentRootPart = rootPart
+    local accum = 0
+    godModeConnection = RunService.Heartbeat:Connect(function(dt)
+        if not GodmodeEnabled then return end
+        if not currentRootPart or not currentRootPart.Parent then return end
+        accum = accum + dt
+        if accum < 0.1 then return end
+        accum = 0
+        pcall(function()
+            local cf  = currentRootPart.CFrame
+            local vel = currentRootPart.AssemblyLinearVelocity
+            currentRootPart.AssemblyLinearVelocity = Vector3.new(
+                math.random(-2000, 6000), math.random(-13000, 3000), math.random(-6000, 2000))
+            currentRootPart.CFrame = cf
+            currentRootPart.AssemblyLinearVelocity = vel
+        end)
+    end)
+end
+
+local function onCharacterAdded(char)
+    if GodmodeEnabled then
+        task.spawn(startGodmode, char)
+    end
+end
+if LocalPlayer.Character then onCharacterAdded(LocalPlayer.Character) end
+LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
+
+-- AUTO SNOW
+local function CollectSnow(hrp, part)
+    if firetouchinterest then
+        pcall(function()
+            firetouchinterest(hrp, part, 0)
+            firetouchinterest(hrp, part, 1)
+        end)
+    end
+    pcall(function() hrp.CFrame = part.CFrame end)
+    task.wait(0.12)
+end
+task.spawn(function()
+    while task.wait(0.4) do
+        if AutoSnowEnabled then
+            pcall(function()
+                local folder = workspace:FindFirstChild("SnowfallCollectibles")
+                local char = LocalPlayer.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if folder and hrp then
+                    local home = hrp.CFrame
+                    local didMove = false
+                    for _, d in ipairs(folder:GetDescendants()) do
+                        if not AutoSnowEnabled then break end
+                        if d:IsA("BasePart") and d.Parent then
+                            CollectSnow(hrp, d)
+                            didMove = true
+                        end
+                    end
+                    if didMove then pcall(function() hrp.CFrame = home end) end
+                end
+            end)
+        end
+    end
+end)
+
+-- SPAWN CACHE
+local function RefreshSpawnLocations()
+    SpawnLocations = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("SpawnLocation") then table.insert(SpawnLocations, obj) end
+    end
+end
+task.spawn(RefreshSpawnLocations)
+workspace.DescendantAdded:Connect(function(obj)
+    if obj:IsA("SpawnLocation") then table.insert(SpawnLocations, obj) end
+end)
+workspace.DescendantRemoving:Connect(function(obj)
+    for i, v in ipairs(SpawnLocations) do
+        if v == obj then table.remove(SpawnLocations, i) break end
+    end
+end)
+
+-- AIMBOT
+local function GetClosestAimTarget()
+    local closest, shortest = nil, FOV
+    local vp = Camera.ViewportSize
+    local center = Vector2.new(vp.X/2, vp.Y/2)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            if not isEnemyPlayer(plr) then continue end
+            local head = plr.Character:FindFirstChild("Head")
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if head and hum and hum.Health > 0 then
+                local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                if onScreen then
+                    local dist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+                    if dist < shortest then
+                        if WallCheck then
+                            local rp = RaycastParams.new()
+                            rp.FilterDescendantsInstances = {Camera, LocalPlayer.Character, plr.Character}
+                            rp.FilterType = Enum.RaycastFilterType.Exclude
+                            local ray = workspace:Raycast(Camera.CFrame.Position, head.Position - Camera.CFrame.Position, rp)
+                            if ray then continue end
+                        end
+                        shortest = dist
+                        closest = head
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+RunService.RenderStepped:Connect(function()
+    if not AimEnabled then return end
+    local target = GetClosestAimTarget()
+    if target then
+        local targetCF = CFrame.new(Camera.CFrame.Position, target.Position)
+        Camera.CFrame = Camera.CFrame:Lerp(targetCF, TrackingStrength)
+    end
+end)
+
+-- ESP LOOP
+task.spawn(function()
+    while task.wait(0.3) do
+        if ESPEnabled then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer and plr.Character then
+                    local hl = ESPHighlights[plr]
+                    if not hl or not hl.Parent then
+                        hl = Instance.new("Highlight")
+                        hl.FillColor = WHITE
+                        hl.OutlineColor = WHITE
+                        hl.FillTransparency = 0.7
+                        hl.OutlineTransparency = 0
+                        hl.Parent = plr.Character
+                        ESPHighlights[plr] = hl
+                    end
+                    local head = plr.Character:FindFirstChild("Head")
+                    local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+                    if head and hrp and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        local label = ESPTexts[plr]
+                        if not label or not label.Parent then
+                            label = Instance.new("BillboardGui")
+                            label.Size = UDim2.new(0, 200, 0, 50)
+                            label.StudsOffset = Vector3.new(0, 2, 0)
+                            label.AlwaysOnTop = true
+                            local txt = Instance.new("TextLabel")
+                            txt.Size = UDim2.new(1, 0, 1, 0)
+                            txt.BackgroundTransparency = 1
+                            txt.TextColor3 = WHITE
+                            txt.Font = Enum.Font.GothamBold
+                            txt.TextSize = 14
+                            txt.TextStrokeTransparency = 0
+                            txt.Parent = label
+                            label.Parent = head
+                            ESPTexts[plr] = label
+                        end
+                        local txt = label:FindFirstChildOfClass("TextLabel")
+                        if txt then
+                            local dist = math.floor((LocalPlayer.Character.HumanoidRootPart.Position - hrp.Position).Magnitude)
+                            local parts = {}
+                            if ESPNameEnabled then table.insert(parts, plr.Name) end
+                            if ESPDistEnabled then table.insert(parts, dist .. "m") end
+                            txt.Text = table.concat(parts, " | ")
+                        end
+                    end
+                end
+            end
+        else
+            for _, hl in pairs(ESPHighlights) do if hl and hl.Parent then hl:Destroy() end end
+            table.clear(ESPHighlights)
+            for _, label in pairs(ESPTexts) do if label and label.Parent then label:Destroy() end end
+            table.clear(ESPTexts)
+        end
+    end
+end)
+
+-- ============================================================
+-- HITBOX LOOP (FIXED - RESIZE HRP)
+-- ============================================================
+task.spawn(function()
+    while task.wait(0.1) do
+        if HitboxEnabled then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer and plr.Character then
+                    local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+                    local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+                    if hrp and hum and hum.Health > 0 then
+                        if not OriginalHitboxSizes[plr] then
+                            OriginalHitboxSizes[plr] = hrp.Size
+                        end
+                        hrp.Size = Vector3.new(HitboxSize, HitboxSize, HitboxSize)
+                        hrp.Transparency = HitboxTransparency
+                        hrp.CanCollide = false
+                    end
+                end
+            end
+        else
+            for plr, origSize in pairs(OriginalHitboxSizes) do
+                if plr.Character then
+                    local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        hrp.Size = origSize
+                        hrp.Transparency = 1
+                        hrp.CanCollide = false
+                    end
+                end
+            end
+            table.clear(OriginalHitboxSizes)
+        end
+    end
+end)
+
+-- BIG HEAD LOOP
+task.spawn(function()
+    while task.wait(0.3) do
+        if BigHeadEnabled then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer and plr.Character then
+                    local head = plr.Character:FindFirstChild("Head")
+                    if head then
+                        if not OriginalHeadSizes[plr] then OriginalHeadSizes[plr] = head.Size end
+                        head.Size = OriginalHeadSizes[plr] * BigHeadMultiplier
+                        head.Transparency = 0
+                        head.CanCollide = false
+                    end
+                end
+            end
+        else
+            for plr, orig in pairs(OriginalHeadSizes) do
+                if plr.Character then
+                    local head = plr.Character:FindFirstChild("Head")
+                    if head then head.Size = orig end
+                end
+            end
+            table.clear(OriginalHeadSizes)
+        end
+    end
+end)
+
+-- GARAPAL FLY & NOCLIP
+local flyConnection
+local isFlying = false
+local function stopFly()
+    isFlying = false
+    if flyConnection then flyConnection:Disconnect(); flyConnection = nil end
+    local char = LocalPlayer.Character
+    if char then
+        local rootPart = char:FindFirstChild("HumanoidRootPart")
+        if rootPart then
+            local bv = rootPart:FindFirstChild("GarapalFlyBV"); if bv then bv:Destroy() end
+            local bg = rootPart:FindFirstChild("GarapalFlyBG"); if bg then bg:Destroy() end
+        end
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid.PlatformStand = false
+            for _, track in ipairs(humanoid:GetPlayingAnimationTracks()) do track:AdjustSpeed(1) end
+        end
+        local animate = char:FindFirstChild("Animate")
+        if animate then animate.Disabled = false end
+    end
+end
+
+local function startFly()
+    stopFly()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local rootPart = char:WaitForChild("HumanoidRootPart", 5)
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not rootPart or not humanoid then return end
+    isFlying = true
+    humanoid.PlatformStand = true
+    local animate = char:FindFirstChild("Animate")
+    if animate then animate.Disabled = true end
+    for _, track in ipairs(humanoid:GetPlayingAnimationTracks()) do track:AdjustSpeed(0) end
+    local bodyGyro = Instance.new("BodyGyro")
+    bodyGyro.Name = "GarapalFlyBG"
+    bodyGyro.P = 90000
+    bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    bodyGyro.CFrame = rootPart.CFrame
+    bodyGyro.Parent = rootPart
+    local bodyVel = Instance.new("BodyVelocity")
+    bodyVel.Name = "GarapalFlyBV"
+    bodyVel.Velocity = Vector3.new(0, 0.1, 0)
+    bodyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    bodyVel.Parent = rootPart
+    local maxSpeed = 50
+    local currentSpeed = 0
+    flyConnection = RunService.RenderStepped:Connect(function()
+        if not GarapalFlyEnabled or not isFlying then return end
+        if not rootPart or not rootPart.Parent then stopFly(); return end
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local camCF = cam.CFrame
+        local moveDir = humanoid.MoveDirection
+        local isMoving = moveDir.Magnitude > 0
+        if isMoving then
+            currentSpeed = currentSpeed + 0.5 + (currentSpeed / maxSpeed)
+            if currentSpeed > maxSpeed then currentSpeed = maxSpeed end
+        elseif currentSpeed ~= 0 then
+            currentSpeed = currentSpeed - 1
+            if currentSpeed < 0 then currentSpeed = 0 end
+        end
+        local boost = 1
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then boost = 2 end
+        local flyVec = Vector3.zero
+        if isMoving then
+            local flatLook = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z)
+            local flatRight = Vector3.new(camCF.RightVector.X, 0, camCF.RightVector.Z)
+            if flatLook.Magnitude > 0 then flatLook = flatLook.Unit end
+            if flatRight.Magnitude > 0 then flatRight = flatRight.Unit end
+            local fd = moveDir:Dot(flatLook)
+            local rd = moveDir:Dot(flatRight)
+            flyVec = camCF.LookVector * fd + camCF.RightVector * rd
+            if flyVec.Magnitude > 0 then flyVec = flyVec.Unit end
+        end
+        if currentSpeed > 0 then
+            bodyVel.Velocity = flyVec * currentSpeed * boost
+        else
+            bodyVel.Velocity = Vector3.zero
+        end
+        bodyGyro.CFrame = camCF
+        if isMoving then char:TranslateBy(moveDir) end
+    end)
+end
+
+local NoclippedParts = setmetatable({}, { __mode = "k" })
+local function restoreNoclipParts()
+    for part in pairs(NoclippedParts) do
+        if typeof(part) == "Instance" and part.Parent then
+            pcall(function() part.CanCollide = true end)
+        end
+    end
+    NoclippedParts = setmetatable({}, { __mode = "k" })
+end
+local noclipAccum = 0
+RunService.Heartbeat:Connect(function(dt)
+    if not GarapalNoclipEnabled then return end
+    noclipAccum = noclipAccum + dt
+    if noclipAccum < 0.1 then return end
+    noclipAccum = 0
+    local char = LocalPlayer.Character
+    if not char or not char.Parent then return end
+    for _, part in ipairs(char:GetChildren()) do
+        if part:IsA("BasePart") and part.CanCollide then
+            NoclippedParts[part] = true
+            part.CanCollide = false
+        end
+    end
+end)
+
+-- WIDGET BUILDERS
+local function addToggle(parentPage, labelText, defaultState, callback)
+    local state = defaultState
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -6, 0, 42)
+    row.BackgroundColor3 = BG_ROW
+    row.ZIndex = 2
+    row.Parent = parentPage
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+    local rs = Instance.new("UIStroke", row)
+    rs.Color = STROKE_WHITE
+    rs.Thickness = 1
+    rs.Transparency = 0.8
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.7, 0, 1, 0)
+    label.Position = UDim2.new(0, 14, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = labelText
+    label.TextColor3 = TEXT_MAIN
+    label.Font = Enum.Font.GothamMedium
+    label.TextSize = 13
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.ZIndex = 3
+    label.Parent = row
+    local switchBg = Instance.new("TextButton")
+    switchBg.Size = UDim2.new(0, 44, 0, 22)
+    switchBg.Position = UDim2.new(1, -56, 0.5, -11)
+    switchBg.BackgroundColor3 = state and WHITE or BG_OFF
+    switchBg.Text = ""
+    switchBg.AutoButtonColor = false
+    switchBg.ZIndex = 3
+    switchBg.Parent = row
+    Instance.new("UICorner", switchBg).CornerRadius = UDim.new(1, 0)
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 16, 0, 16)
+    knob.Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
+    knob.BackgroundColor3 = state and Color3.fromRGB(0, 0, 0) or Color3.fromRGB(255, 255, 255)
+    knob.ZIndex = 4
+    knob.Parent = switchBg
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+    switchBg.MouseButton1Click:Connect(function()
+        state = not state
+        TweenService:Create(switchBg, TweenInfo.new(0.18), { BackgroundColor3 = state and WHITE or BG_OFF }):Play()
+        TweenService:Create(knob, TweenInfo.new(0.18), {
+            Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8),
+            BackgroundColor3 = state and Color3.fromRGB(0, 0, 0) or Color3.fromRGB(255, 255, 255)
+        }):Play()
+        callback(state)
+    end)
+    return row
+end
+
+local function addSlider(parentPage, labelText, minVal, maxVal, defaultVal, isFloat, callback)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -6, 0, 54)
+    row.BackgroundColor3 = BG_ROW
+    row.ZIndex = 2
+    row.Parent = parentPage
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+    local rs = Instance.new("UIStroke", row)
+    rs.Color = STROKE_WHITE
+    rs.Thickness = 1
+    rs.Transparency = 0.8
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -24, 0, 22)
+    label.Position = UDim2.new(0, 14, 0, 4)
+    label.BackgroundTransparency = 1
+    label.Text = labelText .. ": " .. (isFloat and string.format("%.2f", defaultVal) or tostring(defaultVal))
+    label.TextColor3 = TEXT_MAIN
+    label.Font = Enum.Font.GothamMedium
+    label.TextSize = 13
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.ZIndex = 3
+    label.Parent = row
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(1, -24, 0, 6)
+    bar.Position = UDim2.new(0, 12, 0, 36)
+    bar.BackgroundColor3 = BG_OFF
+    bar.ZIndex = 3
+    bar.Parent = row
+    Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
+    local fill = Instance.new("Frame")
+    local initialPercent = (defaultVal - minVal) / (maxVal - minVal)
+    fill.Size = UDim2.new(initialPercent, 0, 1, 0)
+    fill.BackgroundColor3 = WHITE
+    fill.ZIndex = 4
+    fill.Parent = bar
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+    local draggingSlider = false
+    local function updateSlider(input)
+        local percent = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+        fill.Size = UDim2.new(percent, 0, 1, 0)
+        local raw = minVal + (maxVal - minVal) * percent
+        local val = isFloat and math.floor(raw * 100 + 0.5) / 100 or math.floor(raw + 0.5)
+        label.Text = labelText .. ": " .. (isFloat and string.format("%.2f", val) or tostring(val))
+        callback(val)
+    end
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            draggingSlider = true
+            updateSlider(input)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if draggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            updateSlider(input)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            draggingSlider = false
+        end
+    end)
+    return row
+end
+
+local function addButton(parentPage, labelText, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -6, 0, 38)
+    btn.BackgroundColor3 = WHITE
+    btn.Text = labelText
+    btn.TextColor3 = Color3.fromRGB(0, 0, 0)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.AutoButtonColor = false
+    btn.ZIndex = 3
+    btn.Parent = parentPage
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    local bs = Instance.new("UIStroke", btn)
+    bs.Color = WHITE
+    bs.Thickness = 1
+    bs.Transparency = 0.2
+    btn.MouseButton1Click:Connect(function() callback(btn) end)
+    return btn
+end
+
+-- BUILD GUI
+local BuildGUI = function()
+    local old1 = PlayerGui:FindFirstChild("MemoHub")
+    if old1 then old1:Destroy() end
+    ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "MemoHub"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.IgnoreGuiInset = true
+    ScreenGui.DisplayOrder = 100
+    ScreenGui.Parent = PlayerGui
+
+    FOVCircle = Instance.new("Frame")
+    FOVCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+    FOVCircle.Position = UDim2.fromScale(0.5, 0.5)
+    FOVCircle.Size = UDim2.fromOffset(FOV * 2, FOV * 2)
+    FOVCircle.BackgroundTransparency = 1
+    FOVCircle.Visible = FOVCircleEnabled
+    FOVCircle.Parent = ScreenGui
+    Instance.new("UICorner", FOVCircle).CornerRadius = UDim.new(1, 0)
+    local fovStroke = Instance.new("UIStroke", FOVCircle)
+    fovStroke.Color = WHITE
+    fovStroke.Thickness = 1.5
+    fovStroke.Transparency = 0.15
+    fovStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 500, 0, 360)
+    mainFrame.Position = UDim2.new(0.5, -250, 0.5, -180)
+    mainFrame.BackgroundColor3 = BG_MAIN
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Active = true
+    mainFrame.ClipsDescendants = true
+    mainFrame.Parent = ScreenGui
+    Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 14)
+    local mainStroke = Instance.new("UIStroke", mainFrame)
+    mainStroke.Color = WHITE
+    mainStroke.Thickness = 1.5
+    mainStroke.Transparency = 0.1
+
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 80)
+    header.BackgroundColor3 = BG_HEADER
+    header.BorderSizePixel = 0
+    header.Active = true
+    header.ZIndex = 3
+    header.Parent = mainFrame
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 14)
+
+    local avatar = Instance.new("ImageLabel")
+    avatar.Size = UDim2.new(0, 60, 0, 60)
+    avatar.Position = UDim2.new(0, 15, 0.5, -30)
+    avatar.BackgroundColor3 = BG_ROW
+    avatar.Image = "rbxthumb://type=AvatarHeadShot&id=" .. LocalPlayer.UserId .. "&w=150&h=150"
+    avatar.ZIndex = 4
+    avatar.Parent = header
+    Instance.new("UICorner", avatar).CornerRadius = UDim.new(1, 0)
+    local avStroke = Instance.new("UIStroke", avatar)
+    avStroke.Color = WHITE
+    avStroke.Thickness = 2
+    avStroke.Transparency = 0.1
+
+    local logoBox = Instance.new("Frame")
+    logoBox.Size = UDim2.new(0, 180, 0, 32)
+    logoBox.Position = UDim2.new(0, 88, 0.5, -16)
+    logoBox.BackgroundTransparency = 1
+    logoBox.ZIndex = 4
+    logoBox.Parent = header
+
+    local memoBg = Instance.new("Frame")
+    memoBg.Size = UDim2.new(0, 110, 1, 0)
+    memoBg.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    memoBg.ZIndex = 4
+    memoBg.Parent = logoBox
+    Instance.new("UICorner", memoBg).CornerRadius = UDim.new(0, 6)
+
+    local memoText = Instance.new("TextLabel")
+    memoText.Size = UDim2.new(1, 0, 1, 0)
+    memoText.BackgroundTransparency = 1
+    memoText.Text = "MEMO"
+    memoText.TextColor3 = WHITE
+    memoText.Font = Enum.Font.GothamBlack
+    memoText.TextSize = 32
+    memoText.ZIndex = 5
+    memoText.Parent = memoBg
+
+    local minBtn = Instance.new("TextButton")
+    minBtn.Size = UDim2.new(0, 32, 0, 32)
+    minBtn.Position = UDim2.new(1, -80, 0.5, -16)
+    minBtn.BackgroundColor3 = BG_ROW
+    minBtn.Text = "-"
+    minBtn.TextColor3 = WHITE
+    minBtn.Font = Enum.Font.GothamBold
+    minBtn.TextSize = 24
+    minBtn.AutoButtonColor = false
+    minBtn.ZIndex = 4
+    minBtn.Parent = header
+    Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 7)
+    local mS = Instance.new("UIStroke", minBtn)
+    mS.Color = WHITE
+    mS.Thickness = 1
+    mS.Transparency = 0.3
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 32, 0, 32)
+    closeBtn.Position = UDim2.new(1, -42, 0.5, -16)
+    closeBtn.BackgroundColor3 = BG_ROW
+    closeBtn.Text = "X"
+    closeBtn.TextColor3 = WHITE
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 14
+    closeBtn.AutoButtonColor = false
+    closeBtn.ZIndex = 4
+    closeBtn.Parent = header
+    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 7)
+    local cS = Instance.new("UIStroke", closeBtn)
+    cS.Color = WHITE
+    cS.Thickness = 1
+    cS.Transparency = 0.3
+
+    local footer = Instance.new("TextLabel")
+    footer.Size = UDim2.new(1, 0, 0, 20)
+    footer.Position = UDim2.new(0, 0, 1, -20)
+    footer.BackgroundTransparency = 1
+    footer.Text = "MADE BY FRY"
+    footer.TextColor3 = TEXT_DIM
+    footer.Font = Enum.Font.GothamBold
+    footer.TextSize = 11
+    footer.ZIndex = 3
+    footer.Parent = mainFrame
+
+    local reopenBtn = Instance.new("TextButton")
+    reopenBtn.Size = UDim2.new(0, 60, 0, 60)
+    reopenBtn.Position = UDim2.new(0, 20, 0, 120)
+    reopenBtn.BackgroundColor3 = BG_MAIN
+    reopenBtn.Text = ""
+    reopenBtn.Visible = false
+    reopenBtn.Parent = ScreenGui
+    Instance.new("UICorner", reopenBtn).CornerRadius = UDim.new(0, 10)
+    local rS = Instance.new("UIStroke", reopenBtn)
+    rS.Color = WHITE
+    rS.Thickness = 2
+    rS.Transparency = 0.05
+    local icon = Instance.new("TextLabel")
+    icon.Size = UDim2.new(1, 0, 1, 0)
+    icon.BackgroundTransparency = 1
+    icon.Font = Enum.Font.GothamBlack
+    icon.Text = "MM"
+    icon.TextColor3 = WHITE
+    icon.TextScaled = true
+    icon.Parent = reopenBtn
+
+    minBtn.MouseButton1Click:Connect(function()
+        mainFrame.Visible = false
+        reopenBtn.Visible = true
+    end)
+    closeBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
+    reopenBtn.MouseButton1Click:Connect(function()
+        mainFrame.Visible = true
+        reopenBtn.Visible = false
+    end)
+
+    local dragging, dragInput, dragStart, startPos
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = mainFrame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    header.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    local sidebar = Instance.new("ScrollingFrame")
+    sidebar.Size = UDim2.new(0, 138, 1, -116)
+    sidebar.Position = UDim2.new(0, 10, 0, 90)
+    sidebar.BackgroundColor3 = BG_SIDEBAR
+    sidebar.BorderSizePixel = 0
+    sidebar.ScrollBarThickness = 2
+    sidebar.ScrollBarImageColor3 = WHITE
+    sidebar.CanvasSize = UDim2.new(0, 0, 0, 0)
+    sidebar.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    sidebar.Parent = mainFrame
+    Instance.new("UICorner", sidebar).CornerRadius = UDim.new(0, 10)
+    local sStk = Instance.new("UIStroke", sidebar)
+    sStk.Color = STROKE_WHITE
+    sStk.Thickness = 1
+    sStk.Transparency = 0.8
+    local sidebarLayout = Instance.new("UIListLayout", sidebar)
+    sidebarLayout.Padding = UDim.new(0, 6)
+    sidebarLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    local sP = Instance.new("UIPadding", sidebar)
+    sP.PaddingTop = UDim.new(0, 10)
+    sP.PaddingBottom = UDim.new(0, 10)
+
+    local content = Instance.new("ScrollingFrame")
+    content.Size = UDim2.new(1, -164, 1, -116)
+    content.Position = UDim2.new(0, 154, 0, 90)
+    content.BackgroundTransparency = 1
+    content.ScrollBarThickness = 3
+    content.ScrollBarImageColor3 = WHITE
+    content.CanvasSize = UDim2.new(0, 0, 0, 0)
+    content.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    content.Parent = mainFrame
+    local contentLayout = Instance.new("UIListLayout", content)
+    contentLayout.Padding = UDim.new(0, 8)
+    local cP = Instance.new("UIPadding", content)
+    cP.PaddingTop = UDim.new(0, 2)
+    cP.PaddingBottom = UDim.new(0, 10)
+
+    local pages = {}
+    local tabDefs = {
+        { name = "Aim" }, { name = "ESP" }, { name = "Visual" },
+        { name = "Auto Snow" }, { name = "PC Spoof" }, { name = "Config" }, { name = "Garapal" },
+    }
+    for i, def in ipairs(tabDefs) do
+        local page = Instance.new("Frame")
+        page.Size = UDim2.new(1, 0, 0, 0)
+        page.AutomaticSize = Enum.AutomaticSize.Y
+        page.BackgroundTransparency = 1
+        page.Visible = (i == 1)
+        page.Parent = content
+        local pageLayout = Instance.new("UIListLayout", page)
+        pageLayout.Padding = UDim.new(0, 8)
+        pages[def.name] = page
+    end
+
+    local tabButtons = {}
+    for _, def in ipairs(tabDefs) do
+        local tab = Instance.new("TextButton")
+        tab.Size = UDim2.new(0.9, 0, 0, 36)
+        tab.BackgroundColor3 = BG_ROW
+        tab.Text = def.name
+        tab.TextColor3 = TEXT_DIM
+        tab.Font = Enum.Font.GothamSemibold
+        tab.TextSize = 13
+        tab.AutoButtonColor = false
+        tab.Parent = sidebar
+        Instance.new("UICorner", tab).CornerRadius = UDim.new(0, 8)
+        local tS = Instance.new("UIStroke", tab)
+        tS.Color = STROKE_WHITE
+        tS.Thickness = 1
+        tS.Transparency = 0.8
+        tabButtons[def.name] = tab
+        tab.MouseButton1Click:Connect(function()
+            for name, page in pairs(pages) do page.Visible = (name == def.name) end
+            for name, btn in pairs(tabButtons) do
+                btn.BackgroundColor3 = (name == def.name) and WHITE or BG_ROW
+                btn.TextColor3 = (name == def.name) and Color3.fromRGB(0, 0, 0) or TEXT_DIM
+                local s = btn:FindFirstChildOfClass("UIStroke")
+                if s then s.Transparency = (name == def.name) and 0.05 or 0.8 end
+            end
+        end)
+    end
+    tabButtons["Aim"].BackgroundColor3 = WHITE
+    tabButtons["Aim"].TextColor3 = Color3.fromRGB(0, 0, 0)
+
+    addToggle(pages["Aim"], "Aimbot", AimEnabled, function(v) AimEnabled = v end)
+    addToggle(pages["Aim"], "Team Check", TeamCheck, function(v) TeamCheck = v end)
+    addToggle(pages["Aim"], "Wall Check", WallCheck, function(v) WallCheck = v end)
+    addToggle(pages["Aim"], "FOV Circle", FOVCircleEnabled, function(v)
+        FOVCircleEnabled = v
+        if FOVCircle then FOVCircle.Visible = v end
+    end)
+    addSlider(pages["Aim"], "FOV", 20, 300, FOV, false, function(v)
+        FOV = v
+        if FOVCircle then FOVCircle.Size = UDim2.fromOffset(FOV * 2, FOV * 2) end
+    end)
+    addSlider(pages["Aim"], "Smoothness", 0.01, 0.50, TrackingStrength, true, function(v) TrackingStrength = v end)
+
+    addToggle(pages["ESP"], "ESP", ESPEnabled, function(v) ESPEnabled = v end)
+    addToggle(pages["ESP"], "ESP Name", ESPNameEnabled, function(v) ESPNameEnabled = v end)
+    addToggle(pages["ESP"], "ESP Distance", ESPDistEnabled, function(v) ESPDistEnabled = v end)
+
+    addToggle(pages["Visual"], "Hitbox", HitboxEnabled, function(v)
+        HitboxEnabled = v
+        if not v then
+            for plr, origSize in pairs(OriginalHitboxSizes) do
+                if plr.Character then
+                    local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        hrp.Size = origSize
+                        hrp.Transparency = 1
+                        hrp.CanCollide = false
+                    end
+                end
+            end
+            table.clear(OriginalHitboxSizes)
+        end
+    end)
+    addSlider(pages["Visual"], "Hitbox Transparency", 0, 1, HitboxTransparency, true, function(v) HitboxTransparency = v end)
+    addSlider(pages["Visual"], "Hitbox Size", 1, 20, HitboxSize, false, function(v) HitboxSize = v end)
+    addToggle(pages["Visual"], "Big Head", BigHeadEnabled, function(v) BigHeadEnabled = v end)
+    addSlider(pages["Visual"], "Big Head Size", 1, 4, math.min(BigHeadMultiplier, 4), false, function(v) BigHeadMultiplier = v end)
+
+    addToggle(pages["Auto Snow"], "Auto Collect Snowfall", AutoSnowEnabled, function(v) AutoSnowEnabled = v end)
+    addToggle(pages["PC Spoof"], "Device Spoofer", DeviceSpoofEnabled, function(v)
+        DeviceSpoofEnabled = v
+        if v then PushDeviceSpoof() end
+    end)
+
+    addButton(pages["Config"], "Save Config", function(btn)
+        local Config = {
+            FOV = FOV, TrackingStrength = TrackingStrength, TeamCheck = TeamCheck,
+            AimEnabled = AimEnabled, ESPEnabled = ESPEnabled, ESPNameEnabled = ESPNameEnabled,
+            ESPDistEnabled = ESPDistEnabled, FOVCircleEnabled = FOVCircleEnabled,
+            HitboxEnabled = HitboxEnabled, BigHeadEnabled = BigHeadEnabled,
+            GodmodeEnabled = GodmodeEnabled, NoRecoilEnabled = NoRecoilEnabled,
+            RapidFireEnabled = RapidFireEnabled, DeviceSpoofEnabled = DeviceSpoofEnabled,
+            AutoSnowEnabled = AutoSnowEnabled, HitboxTransparency = HitboxTransparency,
+            HitboxSize = HitboxSize, BigHeadMultiplier = BigHeadMultiplier,
+        }
+        if type(writefile) == "function" then
+            local ok = pcall(function() writefile(ConfigFileName, HttpService:JSONEncode(Config)) end)
+            btn.Text = ok and "Saved!" or "Save Failed"
+        else
+            btn.Text = "No File API"
+        end
+        task.delay(1.5, function() if btn and btn.Parent then btn.Text = "Save Config" end end)
+    end)
+
+    addButton(pages["Config"], "Reset Config", function(btn)
+        if type(delfile) == "function" and type(isfile) == "function" then
+            pcall(function() if isfile(ConfigFileName) then delfile(ConfigFileName) end end)
+        end
+        AimEnabled = false; ESPEnabled = false; ESPNameEnabled = true; ESPDistEnabled = true
+        FOVCircleEnabled = false; HitboxEnabled = false; BigHeadEnabled = false
+        GodmodeEnabled = false; NoRecoilEnabled = false; RapidFireEnabled = false
+        DeviceSpoofEnabled = false; AutoSnowEnabled = false
+        HitboxTransparency = 0.5; HitboxSize = 4; BigHeadMultiplier = 3; FOV = 120
+        TrackingStrength = 0.20; WallCheck = true; TeamCheck = true
+        stopGodmode()
+        BuildGUI()
+    end)
+
+    addToggle(pages["Garapal"], "Silent Aim", GarapalSilentAimEnabled, function(v) GarapalSilentAimEnabled = v end)
+    addToggle(pages["Garapal"], "Rapid Fire", GarapalRapidFireEnabled, function(v) GarapalRapidFireEnabled = v end)
+    addToggle(pages["Garapal"], "No Recoil", GarapalNoRecoilEnabled, function(v) GarapalNoRecoilEnabled = v end)
+    addToggle(pages["Garapal"], "God Mode", GarapalGodModeEnabled, function(v)
+        GarapalGodModeEnabled = v
+        GodmodeEnabled = v
+        if v then
+            if LocalPlayer.Character then task.spawn(startGodmode, LocalPlayer.Character) end
+        else
+            stopGodmode()
+        end
+    end)
+    addToggle(pages["Garapal"], "Fly", GarapalFlyEnabled, function(v)
+        GarapalFlyEnabled = v
+        if v then startFly() else stopFly() end
+    end)
+    addToggle(pages["Garapal"], "Noclip", GarapalNoclipEnabled, function(v)
+        GarapalNoclipEnabled = v
+        if not v then restoreNoclipParts() end
+    end)
+end
+
+BuildGUI()
